@@ -1,0 +1,151 @@
+const { contextBridge, ipcRenderer } = require("electron");
+const updateValidationMode = process.env.WECHATVIBE_UPDATE_VALIDATE === "1";
+const updateFinalReadyMode = !updateValidationMode &&
+  typeof process.env.WECHATVIBE_UPDATE_FINAL_READY_FILE === "string" &&
+  typeof process.env.WECHATVIBE_UPDATE_FINAL_READY_NONCE === "string";
+
+ipcRenderer.on("advisor:layout", (_event, state) => {
+  if (window.top !== window || !state || ![0, 440].includes(state.width)) return;
+  document.documentElement.style.setProperty("--advisor-dock-width", state.width + "px");
+  if (Number.isFinite(state.mainWidth) && state.mainWidth > 0 && state.mainWidth <= 32768)
+    document.documentElement.style.setProperty("--advisor-main-width", state.mainWidth + "px");
+  document.documentElement.classList.toggle("advisor-docked", state.width > 0);
+});
+document.addEventListener("DOMContentLoaded", () => {
+  let last = false;
+  const observer = new MutationObserver(() => {
+    const visible = !!document.querySelector(".settings-modal-overlay.show,.modal-overlay.show,.scan-modal-overlay.show,.update-modal-overlay.show,.advisor-modal-overlay,.analysis-scope-overlay:not([hidden]),.startup-overlay:not([hidden])");
+    if (visible !== last) { last = visible; ipcRenderer.send("advisor:modal", visible); }
+  });
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "hidden"] });
+}, { once: true });
+
+ipcRenderer.on("real-client:bridge-restored", () => {
+  window.dispatchEvent(new Event("wechatvibe-service-restored"));
+});
+ipcRenderer.on("real-client:update-state", (_event, state) => {
+  if (state && typeof state === "object")
+    window.dispatchEvent(new CustomEvent("wechatvibe-update-state", { detail: state }));
+});
+ipcRenderer.on("real-client:model-download-state", (_event, state) => {
+  if (state && typeof state === "object")
+    window.dispatchEvent(new CustomEvent("wechatvibe-model-download-state", { detail: state }));
+});
+
+const DOC_URLS = new Set([
+  "https://www.myersbriggs.org/my-mbti-personality-type/the-mbti-preferences/",
+  "https://www.themyersbriggs.com/en-US/Products-and-Services/Myers-Briggs",
+  "https://github.com/tswawa",
+  "https://github.com/tswawa/WechatVibe",
+  "https://github.com/tswawa/WechatVibe/releases",
+]);
+
+document.addEventListener("click", (event) => {
+  if (!event.isTrusted || event.button !== 0 || !navigator.userActivation.isActive || window.top !== window) return;
+  const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+  if (!anchor) return;
+  let target;
+  try {
+    target = new URL(anchor.href);
+  } catch (_) {
+    return;
+  }
+  if (!DOC_URLS.has(target.href) || target.username || target.password) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  ipcRenderer.send("real-client:open-doc", target.href, true, true);
+}, true);
+
+contextBridge.exposeInMainWorld("desktopHost", Object.freeze({
+  platform: "win32",
+  toggleAdvisor(force) {
+    if (window.top !== window || (force !== undefined && typeof force !== "boolean")) return Promise.resolve({ visible: false });
+    return ipcRenderer.invoke("advisor:toggle", force);
+  },
+  sendAdvisorEnvelope(envelope) {
+    if (window.top !== window || !envelope || typeof envelope !== "object") return;
+    ipcRenderer.send("advisor:from-main", envelope);
+  },
+  onAdvisorEnvelope(listener) {
+    if (window.top !== window || typeof listener !== "function") return () => {};
+    const handler = (_event, envelope) => listener(envelope);
+    ipcRenderer.on("advisor:to-main", handler);
+    return () => ipcRenderer.removeListener("advisor:to-main", handler);
+  },
+  chooseAssistantPackage(kind) {
+    if (window.top !== window || !["file", "directory"].includes(kind) || !navigator.userActivation.isActive)
+      return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:choose-assistant-package", kind, true);
+  },
+  updateValidationMode,
+  updateFinalReadyMode,
+  reportUiReady() {
+    if ((!updateValidationMode && !updateFinalReadyMode) || window.top !== window)
+      return Promise.resolve(false);
+    return ipcRenderer.invoke("real-client:update-ui-ready");
+  },
+  setTheme(theme) {
+    if (theme !== "dark" && theme !== "light") return false;
+    ipcRenderer.send("real-client:set-theme", theme);
+    return true;
+  },
+  copyDraft(value) {
+    if (typeof value !== "string" || !value.trim() || value.length > 1_000_000 ||
+        !navigator.userActivation.isActive || window.top !== window) return Promise.resolve(false);
+    return ipcRenderer.invoke("real-client:copy-draft", value);
+  },
+  capturePage(rect) {
+    if (window.top !== window || !rect || typeof rect !== "object") return Promise.resolve(null);
+    const bounds = { x: Number(rect.x), y: Number(rect.y), width: Number(rect.width), height: Number(rect.height) };
+    if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:capture-page", bounds);
+  },
+  copyImage(dataUrl) {
+    if (window.top !== window || typeof dataUrl !== "string" ||
+        !dataUrl.startsWith("data:image/png;base64,") || dataUrl.length > 20_000_000) return Promise.resolve(false);
+    return ipcRenderer.invoke("real-client:copy-image", dataUrl);
+  },
+  exitApp() {
+    if (window.top !== window) return Promise.resolve(false);
+    return ipcRenderer.invoke("real-client:exit-app");
+  },
+  getAppVersion() {
+    if (window.top !== window) return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:app-version");
+  },
+  getModelDownloadState() {
+    if (window.top !== window) return Promise.resolve({ phase: "blocked" });
+    return ipcRenderer.invoke("real-client:model-download-state");
+  },
+  downloadLayaModel() {
+    if (window.top !== window || !navigator.userActivation.isActive)
+      return Promise.resolve({ phase: "blocked" });
+    return ipcRenderer.invoke("real-client:model-download");
+  },
+  chooseModelDirectory() {
+    if (window.top !== window || !navigator.userActivation.isActive) return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:model-choose-directory");
+  },
+  chooseDataRoot() {
+    if (window.top !== window || !navigator.userActivation.isActive) return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:data-root-choose-directory");
+  },
+  checkForUpdates() {
+    if (window.top !== window) return Promise.resolve({ status: "blocked" });
+    return ipcRenderer.invoke("real-client:check-updates");
+  },
+  getUpdateState() {
+    if (window.top !== window) return Promise.resolve({ phase: "blocked" });
+    return ipcRenderer.invoke("real-client:update-state");
+  },
+  beginUpdate() {
+    if (window.top !== window || !navigator.userActivation.isActive)
+      return Promise.resolve({ phase: "blocked" });
+    return ipcRenderer.invoke("real-client:begin-update");
+  },
+  rollbackUpdate() {
+    if (window.top !== window || !navigator.userActivation.isActive)
+      return Promise.resolve({ phase: "blocked" });
+    return ipcRenderer.invoke("real-client:rollback-update");
+  },
+}));
