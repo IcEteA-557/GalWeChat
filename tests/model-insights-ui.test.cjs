@@ -17,11 +17,12 @@ function section(start, end) {
 const code = section("async function api(", "function status(") +
   section("labelState.messageLabels = null;", "function messageInsightView(") +
   section("function messageInsightView(", "function clearInlineIntentPending(") +
-  section("function updateLabel(", "function messageNode(") +
+  section("function analysisPendingNode(", "function messageNode(") +
   section("const MODEL_SOURCE_PROTOCOLS", "let managedAccounts = [];") +
   section("let analysisCacheRequest = 0;", "async function loadAnalysisCache") +
   "globalThis.ui = { showModelSource, updateLabel, validApiInsight, parseApiPartialLabels, renderApiInsightResult, " +
   "ensureApiInsights, fetchApiInsightResults, cancelApiInsightWork, activeApiInsightKey, apiInsightCache, " +
+  "setAnalysisStart: id => { labelState.intentCardStarts.set(intentCardStartKey(), { id: String(id), time: 1 }); }, " +
   "renderAnalysisCache, suppressedApiSources, suppressedLocalAccounts, " +
   "getSource: () => modelSourceSnapshot };";
 
@@ -34,6 +35,13 @@ function element(tag, className = "", value = "") {
     addEventListener() {},
     replaceChildren(...children) { this.children = []; for (const child of children) this.appendChild(child); },
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
+    before(node) {
+      if (!this.parent) return;
+      const index = this.parent.children.indexOf(this);
+      node.parent = this.parent;
+      this.parent.children.splice(Math.max(0, index), 0, node);
+    },
+    compareDocumentPosition() { return 0; },
     getBoundingClientRect() { return { top: 0, bottom: 0 }; },
     querySelectorAll() { return []; },
     querySelector(selector) {
@@ -85,6 +93,11 @@ function harness(fetchImpl = async () => response({ account: "acct", sourceId: "
     return nodes.get(id);
   };
   byId("settingsModal").querySelector = () => element("div");
+  const analysisNotes = { notice: "", intent: "", cards: "" };
+  const setAnalysisNote = (slot, value) => {
+    analysisNotes[slot] = typeof value === "string" ? value : "";
+    byId("analysisStatus").textContent = [analysisNotes.intent, analysisNotes.cards, analysisNotes.notice].filter(Boolean).join("  ·  ");
+  };
   const context = vm.createContext({
     URL, URLSearchParams, AbortController, element, byId,
     document: { createElement: tag => element(tag) },
@@ -107,7 +120,7 @@ function harness(fetchImpl = async () => response({ account: "acct", sourceId: "
     appendScoreLine: row => row.appendChild(element("span", "intent-pct", "80%")),
     appendIntentLine: row => row.appendChild(element("span", "intent-name", "本地意图")),
     displayedIntent: () => [{ label: "本地意图", probability: 0.8 }],
-    clearInlineIntentPending() {}, setIntentActionState() {}, refreshLabels() {},
+    clearInlineIntentPending() {}, setIntentActionState() {}, setAnalysisNote, clearAnalysisNotes() {}, refreshLabels() {},
     submitManualRecent() {},
     handleAccountBoundaryError: () => false,
     hasIntentContent: value => String(value || "").trim().length > 0,
@@ -237,11 +250,12 @@ it("posts only scoped message IDs and a bounded limit; no API key or chat text",
     { id: "m1", side: "other", kind: "text", text: "请把文件发给我" },
     { id: "m2", side: "other", kind: "text", text: "什么时候完成？" },
   ];
+  ui.setAnalysisStart("m1");
   ui.showModelSource(apiState());
   await tick();
   await tick();
   assert.equal(calls[1].url, "/api/model-insights");
-  assert.deepEqual(calls[1].body, { account: "acct", user: "chat", limit: 2,
+  assert.deepEqual(calls[1].body, { account: "acct", user: "chat", style: "dating", limit: 2,
     targetIds: ["m1", "m2"] });
   assert.equal(JSON.stringify(calls).includes("SYNTHETIC_KEY"), false);
   assert.equal(JSON.stringify(calls).includes("请把文件"), false);
@@ -268,11 +282,13 @@ it("analyzes all messages already loaded in the current history window", async (
   const container = byId("chatMessages");
   container.getBoundingClientRect = () => ({ top: 0, bottom: 200 });
   container.querySelectorAll = () => [visible, hidden];
+  ui.setAnalysisStart("old");
   ui.showModelSource(apiState());
   await tick();
   await tick();
   const post = calls.find(call => call.url === "/api/model-insights");
   assert.deepEqual(post.body.targetIds, ["old", "hidden"]);
+  assert.equal(post.body.style, "dating");
   assert.equal(post.body.around, "other-anchor");
   assert.equal(JSON.stringify(post.body).includes("上周见面吗"), false);
 });
@@ -295,6 +311,7 @@ it("submits the loaded message window as one serialized batch", async () => {
   context.messages = Array.from({ length: 11 }, (_, index) => ({
     id: `m${index + 1}`, side: "other", kind: "text", text: `请处理第${index + 1}件事`,
   })).concat([{ id: "punct", side: "other", kind: "text", text: "。。" }]);
+  ui.setAnalysisStart("m1");
   ui.showModelSource(apiState());
   for (let i = 0; i < 8; i++) await tick();
   assert.deepEqual(posts, [["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11", "punct"]]);
@@ -314,6 +331,7 @@ it("hydrates completed API results into the current bubble", async () => {
   });
   const message = { id: "m1", side: "other", kind: "text", text: "请把文件发给我" };
   context.messages = [message];
+  ui.setAnalysisStart("m1");
   ui.showModelSource(apiState());
   await tick();
   await tick();
@@ -413,6 +431,7 @@ it("preserves saved results when submitting a retry and hides previews after a p
     { id: "m2", side: "other", kind: "text", text: "今天怎么样？" },
   ];
   context.messages = messages;
+  ui.setAnalysisStart("m1");
   ui.showModelSource(apiState());
   await tick();
   ui.ensureApiInsights(true);
@@ -463,7 +482,7 @@ it("ignores a late response from an old source", async () => {
   pending[0](response({ account: "acct", sourceId: "api-a", results: { m1: insight },
     job: { id: "old", status: "done", total: 1, processed: 1 } }));
   await tick();
-  assert.equal(ui.apiInsightCache.get(JSON.stringify(["acct", "chat", "api-a"])).results.m1, undefined);
+  assert.equal(ui.apiInsightCache.get(JSON.stringify(["acct", "chat", "api-a", "dating"])).results.m1, undefined);
   assert.equal(ui.getSource().sourceId, "api-b");
   ui.cancelApiInsightWork();
   pending[1](response({ account: "acct", sourceId: "api-b", results: {},
@@ -482,8 +501,8 @@ it("ignores a late result after the account or conversation changes", async () =
   resolveFetch(response({ account: "acct", sourceId: "api-a", results: { m1: insight },
     job: { id: "old", status: "done", total: 1, processed: 1 } }));
   await tick();
-  assert.equal(ui.apiInsightCache.get(JSON.stringify(["acct", "chat", "api-a"])).results.m1, undefined);
-  assert.equal(ui.activeApiInsightKey(), JSON.stringify(["another-account", "another-chat", "api-a"]));
+  assert.equal(ui.apiInsightCache.get(JSON.stringify(["acct", "chat", "api-a", "dating"])).results.m1, undefined);
+  assert.equal(ui.activeApiInsightKey(), JSON.stringify(["another-account", "another-chat", "api-a", "dating"]));
 });
 
 it("unblocks analysis when a previously suspended source reports active again", () => {
@@ -545,7 +564,7 @@ it("reports API failure without falling back to local bubble labels", async () =
   await tick();
   const bubble = messageNode();
   ui.updateLabel(message, bubble);
-  assert.equal(byId("analysisStatus").textContent, "分析结果读取失败");
+  assert.equal(byId("analysisStatus").textContent, "意图失败：分析结果读取失败");
   assert.equal(byId("btnRetryAnalysis").hidden, false);
   assert.equal(countClass(bubble, "intent-pct"), 0);
   assert.equal(countClass(bubble, "inline-intent-row"), 0);

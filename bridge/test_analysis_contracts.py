@@ -43,6 +43,14 @@ class ConstantIdentityTests(unittest.TestCase):
         self.assertEqual(message_contracts.API_INSIGHT_REVISION, "reading-v1")
         self.assertEqual(portrait_contracts.API_PORTRAIT_REVISION, "portrait-v2")
         self.assertEqual(message_contracts.api_insight_scope("api:one"), "api:one:reading-v1")
+        self.assertEqual(message_contracts.api_insight_scope("api:one", "general"), "api:one:reading-v2:general")
+        self.assertEqual(message_contracts.api_insight_scope("api:one", "dating"), "api:one:reading-v2:dating")
+        self.assertEqual(message_contracts.api_insight_read_scopes("api:one", "general"),
+                         ["api:one:reading-v2:general", "api:one:reading-v1"])
+        self.assertEqual(message_contracts.api_insight_read_scopes("api:one", "dating"),
+                         ["api:one:reading-v2:dating"])
+        self.assertEqual(message_contracts.api_insight_write_scope("api:one", "dating"),
+                         "api:one:reading-v2:dating")
         self.assertEqual(portrait_contracts.api_portrait_scope("api:one"), "api:one:portrait-v2")
         self.assertEqual(backend_contracts.api_insight_scope("api:one"), "api:one:reading-v1")
         self.assertEqual(backend_contracts.api_portrait_scope("api:one"), "api:one:portrait-v2")

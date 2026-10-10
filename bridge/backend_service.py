@@ -25,6 +25,7 @@ import message_input
 from api_tasks import ApiTaskCoordinator
 from api_portrait_statistics import (append_batch, profile_from_statistics,
                                     valid_statistics, validate_batch_signal)
+from message_contracts import api_insight_read_scopes, api_insight_write_scope
 from backend_contracts import (
     API_INSIGHT_RETRYABLE, API_INSIGHT_RETRY_MAX, API_INSIGHT_RETRY_SECONDS,
     API_JOB_CACHE_LIMIT, API_MODEL_RETRYABLE, API_MODEL_RETRY_MAX,
@@ -33,8 +34,8 @@ from backend_contracts import (
     API_PORTRAIT_PIECE_CHARS, AccountChangedError, AccountUnavailableError,
     FORECAST_CACHE_LIMIT, FORECAST_SOURCE_WINDOW,
     ForecastRequestError, MAX_ISSUED_IMAGES,
-    MODEL_CONNECTOR_ERRORS, ROOT, affinity_from_progress,
-    api_insight_scope, api_portrait_add_counts, api_portrait_plan,
+    MODEL_CONNECTOR_ERRORS, ROOT,     affinity_from_progress,
+    api_portrait_add_counts, api_portrait_plan,
     api_portrait_resume_anchor, api_portrait_scope, api_portrait_tail_hashes,
     api_portrait_wire_chars, mbti_from_totals, model_source_failure,
     mood_from_progress, normalize_api_insight, scope_rank,
@@ -827,7 +828,27 @@ class Backend:
                 self._cancel_api_source_work_locked()
             return self.model_source()
 
-    def model_insights(self, user, ids=None):
+    def _insight_job_key(self, account, user, source_id, style):
+        if style is None:
+            return (account, user, source_id)
+        return (account, user, source_id, style)
+
+    def _insight_results(self, store, account, user, source_id, style, ids):
+        # Legacy general rows are filled first so a styled result can replace one id.
+        merged = {}
+        for scope in reversed(api_insight_read_scopes(source_id, style)):
+            merged.update(store.api_insight_view(account, user, scope, ids=ids, limit=500))
+        return merged
+
+    def _insight_known(self, store, account, user, source_id, style, ids):
+        known = set()
+        for scope in api_insight_read_scopes(source_id, style):
+            known.update(store.api_insight_known(account, user, scope, ids))
+        return known
+
+    def model_insights(self, user, ids=None, style=None):
+        if style is not None and style not in ("dating", "general"):
+            raise ValueError("invalid insight style")
         if ids is not None and (not isinstance(ids, list) or len(ids) > 500 or
                 any(not isinstance(item, str) or not 1 <= len(item) <= 200 or
                     any(ord(char) < 32 or ord(char) == 127 for char in item) for item in ids) or
@@ -836,16 +857,15 @@ class Backend:
         account, workdir, store = self._scoped_identity()
         with self.api_lock:
             mode, source_id = self.active_model_source_mode, self.active_model_source_id
-            job = dict(self.api_jobs.get((account, user, source_id)) or
+            job = dict(self.api_jobs.get(self._insight_job_key(account, user, source_id, style)) or
                        {"id": None, "status": "idle", "total": 0, "processed": 0})
         results = {}
         suspended = store.cache_suspended(account, source_id) if mode == "api" else False
         if mode == "api":
-            results = store.api_insight_view(account, user, api_insight_scope(source_id),
-                                             ids=ids, limit=500)
+            results = self._insight_results(store, account, user, source_id, style, ids)
             self._assert_scope((account, workdir))
-        return {"account": account, "sourceId": source_id, "results": results, "job": job,
-                "suspended": suspended}
+        return {"account": account, "sourceId": source_id, "style": style, "results": results,
+                "job": job, "suspended": suspended}
 
     def intent_cards(self, user, style, ids):
         if style not in ("dating", "general"):
@@ -1018,7 +1038,7 @@ class Backend:
         finally:
             self.api_tasks.finish()
 
-    def start_model_insights(self, requested_account, user, limit, target_ids=None, around=None):
+    def start_model_insights(self, requested_account, user, limit, target_ids=None, around=None, style=None):
         started = time.perf_counter()
         if type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid API insight limit")
@@ -1031,6 +1051,8 @@ class Backend:
         if around is not None and (not isinstance(around, str) or not around or
                 len(around) > 1024 or target_ids is None):
             raise ValueError("invalid API history anchor")
+        if style is not None and style not in ("dating", "general"):
+            raise ValueError("invalid insight style")
         account, workdir, store = self._scoped_identity()
         if account != requested_account:
             raise AccountChangedError()
@@ -1050,7 +1072,7 @@ class Backend:
                 raise ModelSourceUnavailable("model source changed")
             self._check_analysis_reset(account, user, source_id)
             if store.cache_suspended(account, source_id):
-                return {"account": account, "sourceId": source_id,
+                return {"account": account, "sourceId": source_id, "style": style,
                         "job": {"id": None, "status": "suspended", "total": 0, "processed": 0}}
             store.register_api_source(account, source_id, config["protocol"], config["model"])
             text_window = [item for item in window if item["side"] in ("self", "other") and
@@ -1068,12 +1090,12 @@ class Backend:
             # result are sent to the provider.  This is the same separation as
             # OpenCode's message history: the client owns history, while the
             # provider decides how much of it fits its context window.
-            known = store.api_insight_known(account, user, api_insight_scope(source_id),
-                                            [item["id"] for item in selected])
-            job_key = (account, user, source_id)
+            known = self._insight_known(store, account, user, source_id, style,
+                                        [item["id"] for item in selected])
+            job_key = self._insight_job_key(account, user, source_id, style)
             current = self.api_jobs.get(job_key)
             if current and current["status"] in ("queued", "running"):
-                return {"account": account, "sourceId": source_id, "job": dict(current)}
+                return {"account": account, "sourceId": source_id, "style": style, "job": dict(current)}
             pending = [item for item in selected if item["id"] not in known]
             wire = []
             if pending:
@@ -1112,11 +1134,11 @@ class Backend:
             if not pending:
                 job["status"] = "done"
                 job["timings"]["totalMs"] = round((time.perf_counter() - started) * 1000, 3)
-                return {"account": account, "sourceId": source_id, "job": dict(job)}
+                return {"account": account, "sourceId": source_id, "style": style, "job": dict(job)}
             self.api_tasks.begin()
             thread = threading.Thread(target=self._run_model_insights,
                                       args=(job_key, job, (account, workdir), store, config,
-                                            api_key, wire, pending), daemon=True)
+                                            api_key, wire, pending, style), daemon=True)
             try:
                 thread.start()
             except Exception:
@@ -1124,9 +1146,9 @@ class Backend:
                 job["status"] = "error"
                 job["error"] = "model-analysis-failed"
                 raise
-            return {"account": account, "sourceId": source_id, "job": dict(job)}
+            return {"account": account, "sourceId": source_id, "style": style, "job": dict(job)}
 
-    def _run_model_insights(self, job_key, job, scope, store, config, api_key, wire, pending):
+    def _run_model_insights(self, job_key, job, scope, store, config, api_key, wire, pending, style=None):
         try:
             with self.api_lock:
                 if (self.closing or self.active_model_source_mode != "api" or
@@ -1199,14 +1221,19 @@ class Backend:
                                           inspect.signature(model_insights).parameters)
                     except (TypeError, ValueError):
                         supports_delta = isinstance(self.api_analyzer, NodeAnalysis)
+                    call_kwargs = {}
                     if supports_delta:
-                        response = model_insights(
-                            config["protocol"], config["baseUrl"], api_key, config["model"],
-                            wire, target_ids, on_delta=on_delta)
-                    else:
-                        response = model_insights(
-                            config["protocol"], config["baseUrl"], api_key, config["model"],
-                            wire, target_ids)
+                        call_kwargs["on_delta"] = on_delta
+                    if style in ("dating", "general"):
+                        try:
+                            accepts_style = "style" in inspect.signature(model_insights).parameters
+                        except (TypeError, ValueError):
+                            accepts_style = isinstance(self.api_analyzer, NodeAnalysis)
+                        if accepts_style:
+                            call_kwargs["style"] = style
+                    response = model_insights(
+                        config["protocol"], config["baseUrl"], api_key, config["model"],
+                        wire, target_ids, **call_kwargs)
                     job.setdefault("timings", {})["providerMs"] = round(
                         (time.perf_counter() - provider_started) * 1000, 3)
                     response_timings = response.get("timings") if isinstance(response, dict) else None
@@ -1252,7 +1279,8 @@ class Backend:
                 with source_lock if source_lock is not None else nullcontext():
                     self._assert_scope(scope)
                     save_started = time.perf_counter()
-                    store.save_api_insights(job_key[0], job_key[1], api_insight_scope(job_key[2]),
+                    store.save_api_insights(job_key[0], job_key[1],
+                                            api_insight_write_scope(job_key[2], style),
                                             [(message, by_id[message["id"]]) for message in pending])
                     job.setdefault("timings", {})["saveMs"] = round(
                         (time.perf_counter() - save_started) * 1000, 3)

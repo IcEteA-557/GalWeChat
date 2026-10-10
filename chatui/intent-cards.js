@@ -51,7 +51,7 @@
     function render(card) {
       const root = element("div", "intent-card");
       const head = element("div", "intent-card-head");
-      head.appendChild(element("span", "intent-card-title", "解读"));
+      head.appendChild(element("span", "intent-card-title", "[回复指南]"));
       head.appendChild(element("span", "intent-card-note", "模型推测"));
       root.appendChild(head);
       for (const section of card.sections) {

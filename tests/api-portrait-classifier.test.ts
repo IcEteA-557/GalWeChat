@@ -159,11 +159,13 @@ it("reuses local routed weighting, relationship weights, style and personality c
   assert.equal(result.personalityEvidence!.TF.insufficient, 0.8);
 });
 
-it("retains local scope and insufficient choices instead of defaulting to a personality", async () => {
+it("keeps a shown axis without an explicit self-label and still drops an all-insufficient batch", async () => {
   const answers = ordinaryAnswers();
+  answers.mbti_scope = [1, 0];
   for (const axis of ["EI", "SN", "TF", "JP"]) answers[`mbti_${axis}`] = [0, 1, 0];
   let result = (await classifyApiPortraitBatch(config, request(), fake(answers))).result!;
-  assert.equal(result.personalityEvidence, null, "no recurring preference scope wins over confident axes");
+  assert.deepEqual(result.personalityEvidence!.EI, { E: 1, I: 0, insufficient: 0 },
+    "a no-pattern scope answer cannot erase axes the batch actually scored");
   answers.mbti_scope = [0, 1];
   for (const axis of ["EI", "SN", "TF", "JP"]) answers[`mbti_${axis}`] = [1, 0, 0];
   result = (await classifyApiPortraitBatch(config, request(), fake(answers))).result!;
@@ -449,9 +451,9 @@ it("accepts loose labels and numeric strings, and ignores negative or NaN weight
   arrays.mbti_scope = [0, "4"];
   arrays.mbti_EI = ["0", -3, "80"];
   const maps: Record<string, unknown> = ordinaryAnswers();
-  maps.mbti_scope = { " No Enduring Preference Stated ": "0",
-    "SENDER STATES A RECURRING PERSONAL PREFERENCE": "4", extra: 9 };
-  maps.mbti_EI = { "no stated energy preference": "NaN",
+  maps.mbti_scope = { " No Preference Pattern Shown ": "0",
+    "PREFERENCE PATTERN SHOWN": "4", extra: 9 };
+  maps.mbti_EI = { "no energy preference shown": "NaN",
     " outward interaction restores energy ": -3,
     "Inward Reflection Restores Energy": "80", bonus: null };
   const fromArrays = (await classifyApiPortraitBatch(config, request(), fake(arrays))).result!;

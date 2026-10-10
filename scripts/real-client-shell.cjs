@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, clipboard, dialog, ipcMain, nativeImage, session, shell, screen } = require("electron");
+const { app, BrowserWindow, WebContentsView, clipboard, ClipboardItem, dialog, ipcMain, nativeImage, session, shell, screen } = require("electron");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -166,23 +166,47 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
 
     ipcMain.handle("real-client:capture-page", async (event, rect) => {
       if (!trustedFrame(event) || !rect || typeof rect !== "object") return null;
-      const x = Math.round(Number(rect.x));
-      const y = Math.round(Number(rect.y));
-      const width = Math.round(Number(rect.width));
-      const height = Math.round(Number(rect.height));
-      if (![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 ||
-          width < 1 || height < 1 || width > 4000 || height > 4000) return null;
-      const image = await event.sender.capturePage({ x, y, width, height });
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      if (!owner || owner.isDestroyed()) return null;
+      const [contentWidth, contentHeight] = owner.getContentSize();
+      const x = Math.max(0, Math.floor(Number(rect.x)));
+      const y = Math.max(0, Math.floor(Number(rect.y)));
+      const width = Math.floor(Number(rect.width));
+      const height = Math.floor(Number(rect.height));
+      if (![x, y, width, height, contentWidth, contentHeight].every(Number.isFinite) ||
+          width < 1 || height < 1 || width > 4000 || height > 4000 ||
+          x >= contentWidth || y >= contentHeight) return null;
+      const fitted = {
+        x, y,
+        width: Math.min(width, contentWidth - x),
+        height: Math.min(height, contentHeight - y),
+      };
+      if (fitted.width < 1 || fitted.height < 1) return null;
+      let image;
+      try {
+        image = await event.sender.capturePage(fitted);
+      } catch {
+        return null;
+      }
+      if (!image || image.isEmpty()) return null;
       const data = image.toDataURL();
       return typeof data === "string" && data.startsWith("data:image/png") && data.length <= 12_000_000 ? data : null;
     });
 
-    ipcMain.handle("real-client:copy-image", (event, dataUrl) => {
+    ipcMain.handle("real-client:copy-image", async (event, dataUrl) => {
       if (!trustedFrame(event) || typeof dataUrl !== "string" ||
           !dataUrl.startsWith("data:image/png;base64,") || dataUrl.length > 20_000_000) return false;
       const image = nativeImage.createFromDataURL(dataUrl);
       if (image.isEmpty()) return false;
-      clipboard.writeImage(image);
+      const png = image.toPNG();
+      if (!png?.byteLength) return false;
+      try {
+        await clipboard.write([
+          new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) }),
+        ]);
+      } catch {
+        return false;
+      }
       return true;
     });
 

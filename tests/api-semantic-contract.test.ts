@@ -120,7 +120,8 @@ it("renders at most two lines and three plain labels", () => {
     pickKaomoji: (item: { label?: string }, id: string) => { seen.push([item.label || "", id]); return "(face)"; } });
   const row = renderer.render(view, "m9");
   const again = renderer.render(view, "m9");
-  assert.equal(row.children.length, 1);
+  assert.equal(row.children.length, 2);
+  assert.equal(row.children[0].textContent, "[意图识别]");
   assert.equal(countClass(row, "intent-pct"), 0, "API labels never carry a fabricated score");
   assert.deepEqual(seen, []);
   assert.equal(texts(row), texts(again));
@@ -130,7 +131,7 @@ it("keeps affect/intents out of the portrait contract and the local adapter", ()
   const portrait = readFileSync(path.join(ROOT, "electron/api-portrait.ts"), "utf8");
   assert.doesNotMatch(portrait, /\baffect\b|\bintents\b/u);
   const backend = readFileSync(path.join(ROOT, "bridge/backend_service.py"), "utf8");
-  assert.match(backend, /api_insight_scope\(/u);
+  assert.match(backend, /api_insight_(?:read_scopes|write_scope)\(/u);
   assert.match(backend, /api_portrait_scope\(/u);
   const adapters = readFileSync(path.join(ROOT, "chatui/message-insight-adapters.js"), "utf8");
   const context = vm.createContext({ window: {} });

@@ -119,6 +119,10 @@
           <span class="kaomoji-pill-icon" id="headerMoodKaomoji"></span>
         </span>
         <span class="analysis-status" id="analysisStatus"></span>
+        <div class="analysis-start-notice" id="analysisStartNotice" hidden>
+          <span>当前未选择分析起点，正在显示过往分析内容。</span>
+          <span>选择分析起点后，新消息将自动进行分析。</span>
+        </div>
       </div>
       <div class="chat-history-actions">
         <button type="button" class="chat-history-action" id="btnReturnLatest" hidden>返回最新</button>
@@ -189,10 +193,10 @@
 
           <!-- Text Action Buttons on the right of icons -->
           <button class="toolbar-text-btn active" id="btnToggleIntent" type="button" title="用当前模型猜测对方这句话的几种可能">意图识别</button>
-          <button class="toolbar-text-btn" id="btnToggleIntentCards" type="button" title="显示已保存的回复指南">回复指南</button>
+          <button class="toolbar-text-btn" id="btnToggleIntentCards" type="button" title="显示已保存的回复指南。选了分析起点后，会补上还没有指南的消息">回复指南</button>
           <button class="toolbar-text-btn" id="btnIntentCardStart" type="button" title="选择一条对方消息，从这里分析到最新">分析起点</button>
-          <label class="intent-card-style" for="selectIntentCardStyle">指南风格
-            <select id="selectIntentCardStyle" title="只分析当前会话的这一种风格">
+          <label class="intent-card-style" for="selectIntentCardStyle">分析风格
+            <select id="selectIntentCardStyle" title="切换当前会话的分析风格">
               <option value="dating">恋爱战术</option>
               <option value="general">通用解读</option>
             </select>
@@ -518,7 +522,10 @@
               <input id="inputApiModelId" type="text" placeholder="可手动填写模型 ID" autocomplete="off" spellcheck="false">
             </div>
             <div class="model-source-field">
-              <label for="inputApiContextTokens">上下文大小（tokens）</label>
+              <div class="context-size-label">
+                <label for="inputApiContextTokens">上下文大小（tokens）</label>
+                <button type="button" class="settings-action-btn context-help-btn" id="btnContextSizeHelp">说明</button>
+              </div>
               <input id="inputApiContextTokens" type="number" min="4096" max="1000000" step="1" placeholder="接口未提供时填写，例如 128000" inputmode="numeric">
             </div>
             <div class="model-source-actions">
@@ -671,6 +678,47 @@
       <a id="updateReleaseLink" href="https://github.com/tswawa/WechatVibe/releases" target="_blank" rel="noopener noreferrer">官方发布页</a>
       <button type="button" class="update-check-button" id="btnCheckUpdates">检查更新</button>
       <button type="button" class="update-primary-button" id="btnBeginUpdate" hidden>下载并安装</button>
+    </div>
+  </div>
+</div>
+<div class="context-help-overlay" id="contextSizeHelp" role="dialog" aria-modal="true" aria-labelledby="contextSizeHelpTitle" hidden>
+  <div class="context-help-card">
+    <h2 id="contextSizeHelpTitle">上下文大小说明</h2>
+    <div class="context-help-body">
+      <p>这个数字是当前模型一次请求能读入的上下文容量，单位是 tokens。可填 4096 到 1000000。程序用它决定人物画像和聊天助手每一批带多少聊天内容：容量够就少分几批，超过就自动拆开。</p>
+      <p>请填写服务商实际支持的数字。获取模型列表后，如果接口带回了上下文，输入框会自动填上，一般保持该值。改完要点「保存并启用」。</p>
+      <h3>本软件里怎么选</h3>
+      <ul>
+        <li><strong>12288</strong>：人物画像的最低要求。再小可以保存，但完整画像不会开始。</li>
+        <li><strong>32768</strong>：会话不长、想少花一些费用时够用。</li>
+        <li><strong>65536</strong>：日常推荐。</li>
+        <li><strong>128000</strong>：聊天比较长，希望每一批多看一些上下文。</li>
+        <li>更大不一定更好。单批会更慢、更贵，服务商仍可能按自己的实际上限拒绝。</li>
+      </ul>
+      <h3>常见模型参考</h3>
+      <p>下面是常见公开窗口。窗口会变，以你所用服务商的模型页为准。标称窗口很大时，建议先用实用值，确认稳定再加大。本软件最多填 1000000。</p>
+      <ul>
+        <li><strong>GPT-4o、GPT-4o mini</strong>：128000。</li>
+        <li><strong>GPT-4.1 系列</strong>：公开窗口约 1000000。建议先填 131072。</li>
+        <li><strong>Claude</strong>：较新模型常见 200000 或 1000000。建议先填 131072；服务商写明 200000 时就填 200000。</li>
+        <li><strong>Gemini 2.5</strong>：公开窗口约 1000000。建议先填 131072。</li>
+        <li><strong>DeepSeek V3、R1</strong>：常见 128000 或 163840。</li>
+        <li><strong>通义 Qwen</strong>：看具体型号，常见 32768 或 131072。</li>
+        <li><strong>Ollama 本地模型</strong>：很多默认只有 4096 或 8192。这里填多少，就要把 Ollama 的 num_ctx 设成同一个数。做人物画像至少填 12288。</li>
+      </ul>
+      <p>填得超过服务商真实上限时，分析会提示上下文超限。把数字改回模型实际支持的容量后再保存。</p>
+    </div>
+    <div class="context-help-actions">
+      <button type="button" class="settings-action-btn" id="btnCloseContextSizeHelp">关闭</button>
+    </div>
+  </div>
+</div>
+<div class="analysis-scope-overlay" id="analysisStyleConfirm" role="dialog" aria-modal="true" aria-labelledby="analysisStyleTitle" hidden>
+  <div class="analysis-scope-dialog">
+    <h2 id="analysisStyleTitle">已选择新分析风格，是否重新进行分析？</h2>
+    <div class="analysis-scope-actions">
+      <button type="button" class="settings-action-btn" id="btnCancelAnalysisStyle">取消</button>
+      <button type="button" class="settings-action-btn" id="btnConfirmAnalysisStyle">确认</button>
     </div>
   </div>
 </div>

@@ -275,6 +275,29 @@ class ApiInsightTests(unittest.TestCase):
             time.sleep(.01)
         self.fail("API portrait inventory did not finish")
 
+    def test_general_style_reuses_legacy_results_and_dating_analyzes_gaps(self):
+        self.activate()
+        self.backend.start_model_insights("account-a", "friend", 2)
+        self.wait_done()
+        self.assertEqual(len(self.analyzer.calls), 1)
+        general = self.backend.start_model_insights("account-a", "friend", 2, style="general")
+        self.assertEqual(general["job"]["status"], "done")
+        self.assertEqual(set(general["results"]) if "results" in general else set(
+            self.backend.model_insights("friend", style="general")["results"]), {"o1", "o2"})
+        self.assertEqual(set(self.backend.model_insights("friend", style="general")["results"]), {"o1", "o2"})
+        self.assertEqual(len(self.analyzer.calls), 1)
+        self.backend.start_model_insights("account-a", "friend", 2, style="dating")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            job = self.backend.model_insights("friend", style="dating")["job"]
+            if job["status"] in ("done", "error"):
+                break
+            time.sleep(.01)
+        else:
+            self.fail("dating insight job did not finish")
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(len(self.analyzer.calls), 2)
+
     def test_cached_insights_are_scoped_to_account_and_source(self):
         first = self.activate()
         self.assertEqual(first["mode"], "api")

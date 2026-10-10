@@ -58,13 +58,15 @@ it("uses one template for local and API: emotion line then intent line", () => {
     localDependencies), "m1");
   const api = labels.create({ element, percent: v => `${v * 100}%`, pickKaomoji: () => null })
     .render(adapters.apiView({ id: "m1", status: "ok", emotion: "平静", intent: "请求帮助" }), "m1");
-  assert.equal(local.children.length, 1);
-  assert.equal(api.children.length, 1);
-  assert.equal(local.children[0].className, api.children[0].className);
-  assert.match(local.children[0].className, /emotion-line/);
-  assert.match(api.children[0].className, /emotion-line/);
-  assert.match(local.children[0].className, /intent-score-line/);
-  assert.match(api.children[0].className, /intent-score-line/);
+  assert.equal(local.children.length, 2);
+  assert.equal(api.children.length, 2);
+  assert.equal(local.children[0].textContent, "[意图识别]");
+  assert.equal(api.children[0].textContent, "[意图识别]");
+  assert.equal(local.children[1].className, api.children[1].className);
+  assert.match(local.children[1].className, /emotion-line/);
+  assert.match(api.children[1].className, /emotion-line/);
+  assert.match(local.children[1].className, /intent-score-line/);
+  assert.match(api.children[1].className, /intent-score-line/);
 });
 
 it("keeps punctuation-only text eligible for an intent label", () => {
@@ -84,8 +86,9 @@ it("keeps API labels score-free and never forces three entries", () => {
     .render(adapters.apiView({ id: "m1", status: "ok", emotion: "平静", intent: "请求帮助" }), "m1");
   assert.equal((classes(row).match(/intent-pct/g) || []).length, 0);
   assert.equal(find(row, "intent-line") !== null, true);
-  assert.equal(row.children.length, 1);
-  assert.equal(row.children[0].children.length, 4);
+  assert.equal(row.children.length, 2);
+  assert.equal(row.children[0].textContent, "[意图识别]");
+  assert.equal(row.children[1].children.length, 4);
   assert.doesNotMatch(texts(row), /%|下一步|建议/u);
 });
 
@@ -95,7 +98,8 @@ it("keeps API labels visible for short acknowledgements", () => {
   const row = labels.create({ element, percent: () => "", pickKaomoji: () => null }).render(view, "m1");
   assert.equal(view.emotions.length, 1);
   assert.equal(view.intents.length, 1);
-  assert.equal(row.children.length, 1);
+  assert.equal(row.children.length, 2);
+  assert.equal(row.children[0].textContent, "[意图识别]");
 });
 
 it("keeps local ordering but renders only plain labels", () => {
@@ -128,7 +132,7 @@ it("outputs label text as text content, not markup", () => {
   const view = adapters.apiView({ id: "m1", status: "ok", emotion: "<b>x</b>", intent: "a<script>" });
   const row = labels.create({ element, percent: () => "", pickKaomoji: () => null }).render(view, "m1");
   assert.equal(find(row, "intent-name").textContent, "<b>x</b>");
-  assert.equal(row.children[0].children[1].children[0].tag, "span");
+  assert.equal(row.children[1].children[1].children[0].tag, "span");
 });
 
 it("never renders a kaomoji in message labels", () => {

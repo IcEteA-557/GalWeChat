@@ -41,6 +41,7 @@ export interface ApiInsightMessage {
 export interface ApiInsightInput {
   messages: ApiInsightMessage[];
   targetIds: string[];
+  style?: "dating" | "general";
 }
 
 export interface ApiInsightsResult {
@@ -136,6 +137,16 @@ const SYSTEM = [
   "emotion 限4个汉字，证据不足写无。readings 给出2到4种不同理解，text 用6到32个字说明，percent 为1到99的整数且合计100。",
   "百分比只是你的推测，不是事实。只解释对方这句话可能的意思，不给建议，不输出解释、总结或重复聊天。",
 ].join("\n");
+
+const DATING_SYSTEM = [
+  SYSTEM,
+  "风格是恋爱或暧昧里的意思判断：这句更可能在确认在乎、试探、生气、缓和，还是在等一个回应。",
+  "仍然只解释这句话可能的意思，不给建议，不写成已经发生的事实。",
+].join("\n");
+
+export function insightSystem(style: "dating" | "general" | undefined): string {
+  return style === "dating" ? DATING_SYSTEM : SYSTEM;
+}
 
 /** Extract the first short Han phrase from a model field or a noisy text line. */
 function shortLabel(value: unknown): string {
@@ -406,7 +417,7 @@ export async function analyzeApiInsights(
     return allowed.has(id) ? { ...normalized, id } : null;
   }, onTextDelta);
   const response = await generate(config, {
-    system: SYSTEM,
+    system: insightSystem(input.style),
     prompt: `CHAT_BATCH_JSON:\n${JSON.stringify({ messages: promptMessages, targetIds: promptTargetIds })}`,
     jsonMode: false,
     stream: true,

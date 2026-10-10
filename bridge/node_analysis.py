@@ -315,11 +315,13 @@ class NodeAnalysis:
         return {"text": text, "usage": response.get("usage")}
 
     def model_insights(self, protocol, base_url, api_key, model, messages, target_ids,
-                       on_delta=None):
-        response, _ = self._request({"cmd": "model:insights", "protocol": protocol,
-                                     "baseUrl": base_url, "apiKey": api_key, "model": model,
-                                     "messages": messages, "targetIds": target_ids},
-                                    require_model=False, on_stream_delta=on_delta)
+                       on_delta=None, style=None):
+        request = {"cmd": "model:insights", "protocol": protocol,
+                   "baseUrl": base_url, "apiKey": api_key, "model": model,
+                   "messages": messages, "targetIds": target_ids}
+        if style in ("dating", "general"):
+            request["style"] = style
+        response, _ = self._request(request, require_model=False, on_stream_delta=on_delta)
         insights = response.get("insights")
         if not isinstance(insights, list) or len(insights) != len(target_ids):
             raise RuntimeError("invalid-insights")

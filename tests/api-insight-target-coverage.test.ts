@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { analyzeApiInsights } from "../electron/api-message-insights";
+import { analyzeApiInsights, insightSystem } from "../electron/api-message-insights";
 import { ModelConnectorError, type ModelConfig } from "../electron/model-connectors";
 const config: ModelConfig = { protocol: "chat_completions", baseUrl: "https://example.invalid/v1", model: "fake", apiKey: "fake" };
 const input = { messages: [
@@ -27,6 +27,18 @@ it("distinguishes explicitly absent tags from missing output", async () => {
     const result = await analyzeApiInsights(config, input, fake(reply));
     assert.deepEqual(result.insights, [{ id: "a", status: "ok", intents: [] }, { id: "b", status: "ok", intents: [] }]);
   }
+});
+it("keeps the general prompt and adds a dating reading without changing the result shape", async () => {
+  assert.equal(insightSystem("general"), insightSystem(undefined));
+  assert.match(insightSystem("dating"), /恋爱或暧昧/);
+  assert.doesNotMatch(insightSystem("general"), /恋爱或暧昧/);
+  let system = "";
+  const result = await analyzeApiInsights(config, { ...input, style: "dating" }, async (_config, request) => {
+    system = request.system;
+    return { text: "编号：b\n情感：感激\n意图：致谢\n编号：a\n情感：犹豫\n意图：婉拒\n" };
+  });
+  assert.match(system, /恋爱或暧昧/);
+  assert.deepEqual(result.insights.map(item => item.id), ["a", "b"]);
 });
 it("never reassigns an unrelated structured ID to a missing target", async () => {
   await assert.rejects(analyzeApiInsights(config, input, fake(JSON.stringify({ items: [

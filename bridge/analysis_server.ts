@@ -102,9 +102,14 @@ async function handleApiGeneration(id: unknown, cmd: ApiGenerationCommand,
       emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
       return;
     }
+    if (req.style !== undefined && req.style !== "dating" && req.style !== "general") {
+      emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
+      return;
+    }
     const result = await analyzeApiInsights(connectorConfig(req, true), {
       messages: req.messages as ApiInsightMessage[],
       targetIds: req.targetIds as string[],
+      ...(req.style === "dating" || req.style === "general" ? { style: req.style } : {}),
     }, undefined, (delta) => emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, streamDelta: delta }));
     emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
     return;

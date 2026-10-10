@@ -98,8 +98,8 @@ delete settingsState.settings.historyLimit;
 if (!["dark", "light"].includes(settingsState.settings.theme)) settingsState.settings.theme = "dark";
 if (!["0.9", "1.0", "1.1", "1.25", "1.5"].includes(settingsState.settings.zoom)) settingsState.settings.zoom = "1.0";
 if (typeof settingsState.settings.intent !== "boolean") settingsState.settings.intent = true;
-// The display switch starts off. A previous session used to store "on" because the same
-// button both showed cards and started a new analysis.
+// Display starts off so reopening the app does not launch a guide analysis.
+// Turning the switch on shows saved cards and starts analysis for the current window.
 settingsState.settings.intentCards = false;
 // Fallback for a conversation that has not chosen its own card style yet.
 if (!["dating", "general"].includes(settingsState.settings.intentCardStyle)) settingsState.settings.intentCardStyle = "dating";
@@ -494,7 +494,7 @@ function resetAccountView(message = "当前微信账号未就绪", preserveOther
   setAvatar("selfAvatar", null, [], "我");
   text("chatTitle", "聊天");
   byId("chatStatusPill").style.display = "none";
-  text("analysisStatus", "");
+  clearAnalysisNotes();
   byId("btnRetryAnalysis").hidden = true;
   byId("btnRetryProfile").hidden = true;
   byId("btnResetConversationAnalysis").disabled = true;
@@ -1228,7 +1228,7 @@ async function loadSessions(retryChanged = true) {
       const preparingMessage = typeof data.preparation?.message === "string" && data.preparation.message.length <= 240
         ? data.preparation.message : "聊天记录尚未就绪，正在重试…";
       status(byId("chatMessages"), preparingMessage);
-      text("analysisStatus", "");
+      clearAnalysisNotes();
       switchView("chat");
       renderSessions();
       if (!byId("conversationManager").hidden) renderConversationManager();
@@ -1491,21 +1491,29 @@ function settleInlineIntentPending(job) {
   if (terminal || !labelState.inlineIntentPending.size) labelState.inlineIntentJobId = null;
   if (changed) refreshLabels();
 }
+function analysisPendingNode(className, title) {
+  const node = element("div", className);
+  node.appendChild(element("div", "analysis-block-title", title));
+  node.appendChild(element("div", "analysis-pending-text", "分析中"));
+  return node;
+}
+function placeAnalysisBlocks(wrap) {
+  if (!wrap?.querySelector) return;
+  const intent = wrap.querySelector(".inline-intent-row, .inline-intent-pending");
+  const card = wrap.querySelector(".intent-card, .intent-card-pending");
+  if (!intent || !card) return;
+  const intentFollowsCard = (card.compareDocumentPosition(intent) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  if (intentFollowsCard) card.before(intent);
+}
 function updateLabel(message, node) {
   const wrap = node.querySelector(".msg-content-wrap");
   updateIntentCardAnchor(message, wrap);
-  if (intentCardOwns(message)) {
-    node.querySelector(".msg-avatar-column .msg-mood")?.remove();
-    wrap.querySelector(".inline-expression-row")?.remove();
-    wrap.querySelector(".inline-intent-row")?.remove();
-    wrap.querySelector(".inline-intent-pending")?.remove();
-    updateIntentCard(message, node, wrap);
-    return;
-  }
-  wrap.querySelector(".intent-card")?.remove();
-  wrap.querySelector(".intent-card-pending")?.remove();
+  // Intent labels and reply cards share a bubble. Each one owns its own nodes,
+  // so showing a guide never erases the intent line, and the reverse is also true.
+  updateIntentCard(message, node, wrap);
   if (!settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode === "api") {
     updateApiInsightLabel(message, node, wrap);
+    placeAnalysisBlocks(wrap);
     return;
   }
   const result = labelState.results[message.id];
@@ -1518,23 +1526,23 @@ function updateLabel(message, node) {
   const signature = pending ? "local:pending" : eligible && fineMessageResult(result) && result.state === "done" ?
     `local:${JSON.stringify([result.emotion, result.intentBroad, result.intent, result.groundedIntent,
       result.labelSchema, labelState.catalogReady, labelState.catalogLabelRevision])}` : "";
-  if (node.dataset.analysisSignature === signature) return;
-  const revealing = signature !== "local:pending" && !!wrap.querySelector(".inline-intent-pending");
-  node.querySelector(".msg-avatar-column .msg-mood")?.remove();
-  wrap.querySelector(".inline-expression-row")?.remove();
-  wrap.querySelector(".inline-intent-row")?.remove();
-  wrap.querySelector(".inline-intent-pending")?.remove();
-  node.dataset.analysisSignature = signature;
-  if (!signature) return;
-  if (signature === "local:pending") {
-    wrap.appendChild(element("div", "inline-intent-pending", "分析中"));
-    return;
+  if (node.dataset.insightSignature !== signature) {
+    const revealing = signature !== "local:pending" && !!wrap.querySelector(".inline-intent-pending");
+    node.querySelector(".msg-avatar-column .msg-mood")?.remove();
+    wrap.querySelector(".inline-expression-row")?.remove();
+    wrap.querySelector(".inline-intent-row")?.remove();
+    wrap.querySelector(".inline-intent-pending")?.remove();
+    node.dataset.insightSignature = signature;
+    if (signature === "local:pending") wrap.appendChild(analysisPendingNode("inline-intent-pending", "[意图识别]"));
+    else if (signature) {
+      const row = messageLabelsApi().render(messageInsightView(result, message.text), message.id);
+      if (row.childNodes.length) {
+        if (revealing) row.classList.add("inline-intent-revealed");
+        wrap.appendChild(row);
+      }
+    }
   }
-  const row = messageLabelsApi().render(messageInsightView(result, message.text), message.id);
-  if (row.childNodes.length) {
-    if (revealing) row.classList.add("inline-intent-revealed");
-    wrap.appendChild(row);
-  }
+  placeAnalysisBlocks(wrap);
 }
 function messageNode(message) {
   const session = chatState.sessions.get(chatState.currentUser);
@@ -1607,6 +1615,7 @@ function renderMessages(next, restoreScroll = null, historyAnchor = null) {
   updateHistoryNavigation();
   ensureApiInsights();
   ensureIntentCards();
+  ensureIntentCardAnalysis();
   if (typeof renderShotSelection === "function") renderShotSelection();
 }
 function scrollToLatest() {
@@ -1671,6 +1680,8 @@ function enterHistoryView() {
   refreshLabels();
   updateHistoryNavigation();
   ensureApiInsights();
+  ensureIntentCards();
+  ensureIntentCardAnalysis();
 }
 function historyResponseValid(data, account, user) {
   if (data?.account !== account || data?.user !== user || !Array.isArray(data.messages)) throw new Error("Invalid history response");
@@ -1916,6 +1927,20 @@ function startHistorySearch() {
   byId("historySearchResults").replaceChildren();
   void loadHistorySearchPage(0);
 }
+function setAnalysisNote(slot, value) {
+  if (!labelState.analysisNotes) labelState.analysisNotes = { notice: "", intent: "", cards: "" };
+  labelState.analysisNotes[slot] = typeof value === "string" ? value : "";
+  const node = byId("analysisStatus");
+  if (!node) return;
+  const parts = [labelState.analysisNotes.intent, labelState.analysisNotes.cards, labelState.analysisNotes.notice].filter(Boolean);
+  node.textContent = parts.join("  ·  ");
+  node.title = parts.join("\n");
+}
+function clearAnalysisNotes() {
+  setAnalysisNote("notice", "");
+  setAnalysisNote("intent", "");
+  setAnalysisNote("cards", "");
+}
 function renderJob(job, settlePending = true) {
   if (!job) return;
   portraitState.currentAnalysisJob = job;
@@ -1930,20 +1955,22 @@ function renderJob(job, settlePending = true) {
   const retry = portraitState.incrementalFailed || usingLocalFine() && labelState.recentFailed;
   byId("btnRetryAnalysis").hidden = !retry;
   byId("btnRetryProfile").hidden = !portraitState.incrementalFailed;
-  text("analysisStatus", "");
-  byId("analysisStatus").title = "";
+  setAnalysisNote("notice", "");
   renderApiInsightStatus();
-  if (retry && usingLocalFine()) text("analysisStatus", "会话分析未完成，可重试或重置");
+  if (typeof renderIntentCardButton === "function") renderIntentCardButton();
+  if (retry && usingLocalFine()) setAnalysisNote("notice", "会话分析未完成，可重试或重置");
   updateProfileProgress();
 }
-function setIntentActionState(state) {
-  if (labelState.intentActionState === state && state !== "idle") return;
+function setIntentActionState(state, detail = "") {
+  if (labelState.intentActionState === state && labelState.intentActionDetail === detail && state !== "idle") return;
   labelState.intentActionState = state;
+  labelState.intentActionDetail = detail;
   clearTimeout(labelState.intentFeedbackTimer);
   const button = byId("btnToggleIntent");
+  const runningLabel = detail ? `意图识别 · ${detail}` : "意图识别 · 分析中";
   button.textContent = !settingsState.settings.intent ? "意图识别" : {
-    idle: "意图识别", submitting: "正在提交…", queued: "识别排队中",
-    running: "识别中…", done: "识别完成", error: "识别失败 · 重试"
+    idle: "意图识别", submitting: "意图识别 · 提交中", queued: "意图识别 · 排队",
+    running: runningLabel, done: "意图识别 · 完成", error: "意图识别 · 重试"
   }[state];
   button.dataset.state = settingsState.settings.intent ? state : "idle";
   if (settingsState.settings.intent && ["submitting", "queued", "running"].includes(state)) button.setAttribute("aria-busy", "true");
@@ -1960,6 +1987,7 @@ function renderRecentAction(job) {
   if (["queued", "running", "done", "error"].includes(status)) setIntentActionState(status);
 }
 function submitManualRecent() {
+  if (!intentCardStartId()) return;
   if (settingsState.suppressedLocalAccounts.has(chatState.currentAccount) || !canAnalyzeLocal() || !settingsState.settings.intent || !chatState.currentUser || !chatState.controller || chatState.historyState || labelState.recentPending ||
       ["queued", "running"].includes(labelState.currentRecentJob?.status)) return;
   if (!portraitState.activeAnalysisScope) {
@@ -1989,8 +2017,9 @@ function fineWindow() {
     if (index !== undefined && (first < 0 || index < first)) first = index;
   }
   const limit = Math.min(80, first < 0 ? Math.min(12, chatState.messages.length) : chatState.messages.length - first);
-  const candidates = chatState.messages.slice(-Math.max(1, limit)).filter(message => message.side === "other" &&
+  let candidates = chatState.messages.slice(-Math.max(1, limit)).filter(message => message.side === "other" &&
     message.kind === "text" && typeof message.text === "string" && message.text.trim());
+  if (intentCardStartId()) candidates = candidates.filter(atOrAfterAnalysisStart);
   return { limit: Math.max(1, limit), candidates };
 }
 function analyzableMessages(window = fineWindow()) {
@@ -2007,6 +2036,7 @@ function fineWindowSignature(window) {
   return JSON.stringify([window.limit, analyzableMessages(window).map(message => [message.id, message.text])]);
 }
 function scheduleRecent(user, token, signal, changedOther) {
+  if (!intentCardStartId()) return;
   if (settingsState.suppressedLocalAccounts.has(chatState.currentAccount) || !canAnalyzeLocal() || !settingsState.settings.intent || chatState.view !== "chat" || document.hidden || startupActive || !changedOther ||
       labelState.recentPending || labelState.recentFailed || !portraitState.activeAnalysisScope) return;
   const window = fineWindow();
@@ -2276,7 +2306,7 @@ function switchSession(user, force = false) {
   byId("chatStatusPill").style.display = "none";
   byId("btnRetryAnalysis").hidden = true;
   byId("btnRetryProfile").hidden = true;
-  text("analysisStatus", "");
+  clearAnalysisNotes();
   text("chatTitle", chatState.sessions.get(user).name || user);
   if (Array.isArray(cached?.messages)) renderMessages(cached.messages, cached);
   else status(byId("chatMessages"), "正在读取消息…");
@@ -4130,12 +4160,12 @@ settingsState.suppressedLocalAccounts = new Set();
 labelState.apiInsightWork = null;
 labelState.apiInsightViewportTimer = null;
 labelState.apiInsightStatusRendered = false;
-function apiInsightKey(account, user, sourceId) {
-  return JSON.stringify([account, user, sourceId]);
+function apiInsightKey(account, user, sourceId, style = intentCardStyle()) {
+  return JSON.stringify([account, user, sourceId, style]);
 }
 function activeApiInsightKey() {
   return settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" && chatState.currentAccount && chatState.currentUser ?
-    apiInsightKey(chatState.currentAccount, chatState.currentUser, settingsState.modelSourceSnapshot.sourceId) : null;
+    apiInsightKey(chatState.currentAccount, chatState.currentUser, settingsState.modelSourceSnapshot.sourceId, intentCardStyle()) : null;
 }
 function activeApiInsightEntry() {
   const key = activeApiInsightKey();
@@ -4272,7 +4302,7 @@ function apiInsightCandidates() {
     (!chatState.historyState || typeof message.historyCursor === "string");
   // Analyze the entire message window already loaded for this conversation.
   // Clicking “load more” is the explicit boundary for expanding that window.
-  return chatState.messages.filter(eligible).slice(-500);
+  return chatState.messages.filter(eligible).filter(atOrAfterAnalysisStart).slice(-500);
 }
 function apiInsightSignature(candidates) {
   return JSON.stringify(candidates.map(message => [String(message.id), message.text]));
@@ -4280,7 +4310,8 @@ function apiInsightSignature(candidates) {
 function apiInsightWorkCurrent(work) {
   return labelState.apiInsightWork === work && settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" &&
     settingsState.settings.intent && chatState.currentAccount === work.account && chatState.currentUser === work.user &&
-    settingsState.modelSourceSnapshot.sourceId === work.sourceId && chatState.generation === work.generation;
+    settingsState.modelSourceSnapshot.sourceId === work.sourceId && work.style === intentCardStyle() &&
+    chatState.generation === work.generation;
 }
 function cancelApiInsightWork() {
   clearTimeout(labelState.apiInsightViewportTimer);
@@ -4291,15 +4322,14 @@ function cancelApiInsightWork() {
   labelState.apiInsightWork = null;
 }
 function renderApiInsightStatus() {
-  const node = byId("analysisStatus");
   const retry = byId("btnRetryAnalysis");
   retry.textContent = "分析失败 · 重试";
   if (!settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode !== "api" || !settingsState.settings.intent || !chatState.currentUser) {
-    if (labelState.apiInsightStatusRendered) node.textContent = "";
     labelState.apiInsightStatusRendered = false;
+    setAnalysisNote("intent", "");
     retry.hidden = !(portraitState.incrementalFailed || usingLocalFine() && labelState.recentFailed);
     if (usingLocalFine() && settingsState.localModelResolved && !settingsState.localModelReady) {
-      node.textContent = "未安装 Laya 模型，请在设置下载模型";
+      setAnalysisNote("notice", "未安装 Laya 模型，请在设置下载模型");
       retry.hidden = true;
     }
     if (settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api") setIntentActionState("idle");
@@ -4308,38 +4338,34 @@ function renderApiInsightStatus() {
   labelState.apiInsightStatusRendered = true;
   const entry = activeApiInsightEntry();
   if (entry?.error) {
-    node.textContent = entry.error;
+    setAnalysisNote("intent", `意图失败：${entry.error}`);
     retry.hidden = false;
     setIntentActionState("error");
   } else if (["queued", "running"].includes(entry?.job?.status) || labelState.apiInsightWork?.postPending) {
     const total = Number(entry?.job?.total) || 0;
     const processed = Number(entry?.job?.processed) || 0;
-    const retry = entry?.job?.retry;
-    if (retry) {
-      const remaining = Math.max(0, Math.ceil((Number(retry.nextAtMs) - Date.now()) / 1000));
+    const count = total > 0 ? `${Math.min(processed, total)}/${total}` : "";
+    const jobRetry = entry?.job?.retry;
+    if (jobRetry) {
+      const remaining = Math.max(0, Math.ceil((Number(jobRetry.nextAtMs) - Date.now()) / 1000));
       const reason = ({ "invalid-output": "模型返回格式不正确", timeout: "模型响应超时",
         "invalid-insights": "模型结果不完整", network: "网络连接失败",
-        "rate-limit": "接口请求受限" })[retry.reason] || "模型响应失败";
-      node.textContent = `${reason}，${remaining} 秒后自动重试 ${retry.attempt}/${retry.max}`;
+        "rate-limit": "接口请求受限" })[jobRetry.reason] || "模型响应失败";
+      setAnalysisNote("intent", `意图${reason}，${remaining} 秒后重试 ${jobRetry.attempt}/${jobRetry.max}`);
     } else {
       const elapsed = Math.max(0, Math.floor((Date.now() - Number(entry?.job?.startedAtMs || Date.now())) / 1000));
-      const firstBodyMs = Number(entry?.job?.timings?.firstBodyMs);
-      const first = Number.isFinite(firstBodyMs) && firstBodyMs >= 0 ?
-        `首段 ${(firstBodyMs / 1000).toFixed(1)} 秒 · ` : "";
-      node.textContent = first + (total > 0 ? `分析中 ${Math.min(processed, total)}/${total} · ${elapsed} 秒` : `分析中 · ${elapsed} 秒`);
+      setAnalysisNote("intent", count ? `意图 ${count} · ${elapsed} 秒` : `意图分析中 · ${elapsed} 秒`);
     }
-    setIntentActionState(labelState.apiInsightWork?.postPending ? "submitting" : entry?.job?.status || "queued");
+    setIntentActionState(labelState.apiInsightWork?.postPending ? "submitting" : entry?.job?.status || "queued", count);
   } else if (entry?.job?.status === "done") {
     // Real wall-clock total from the backend job, never a poll count.
     const totalMs = Number(entry.job.timings?.totalMs);
-    const firstBodyMs = Number(entry.job.timings?.firstBodyMs);
     const total = Number(entry.job.total) || 0;
-    node.textContent = Number.isFinite(totalMs) && totalMs >= 0 ?
-      (Number.isFinite(firstBodyMs) && firstBodyMs >= 0 ? `首段 ${(firstBodyMs / 1000).toFixed(1)} 秒 · ` : "") +
-      `完成 · ${(totalMs / 1000).toFixed(1)} 秒` + (total > 0 ? ` · ${total} 条` : "") : "";
+    setAnalysisNote("intent", Number.isFinite(totalMs) && totalMs >= 0 ?
+      `意图完成${total > 0 ? ` ${total} 条` : ""} · ${(totalMs / 1000).toFixed(1)} 秒` : "意图完成");
     setIntentActionState("done");
   } else {
-    node.textContent = "";
+    setAnalysisNote("intent", "");
     setIntentActionState("idle");
   }
   if (!entry?.error) retry.hidden = !portraitState.incrementalFailed;
@@ -4363,18 +4389,19 @@ function updateApiInsightLabel(message, node, wrap) {
     const preview = entry.job.previewResults?.[id];
     if (validApiInsight(preview, id)) result = preview;
   }
-  const pending = eligible && !result && labelState.apiInsightWork?.key === activeApiInsightKey() &&
-    labelState.apiInsightWork.pendingIds.has(id);
+  const jobLive = !!work && work.key === activeApiInsightKey() &&
+    (work.postPending || ["queued", "running"].includes(entry?.job?.status));
+  const pending = eligible && !result && jobLive && work.pendingIds.has(id);
   const signature = result ? `api:${settingsState.modelSourceSnapshot.sourceId}:${JSON.stringify(result)}` :
     pending ? `api:${settingsState.modelSourceSnapshot.sourceId}:pending:${id}` : "";
-  if (node.dataset.analysisSignature === signature) return;
+  if (node.dataset.insightSignature === signature) return;
   const revealing = !!wrap.querySelector(".inline-intent-pending") && result?.status === "ok";
   node.querySelector(".msg-avatar-column .msg-mood")?.remove();
   wrap.querySelector(".inline-expression-row")?.remove();
   wrap.querySelector(".inline-intent-row")?.remove();
   wrap.querySelector(".inline-intent-pending")?.remove();
-  node.dataset.analysisSignature = signature;
-  if (pending) wrap.appendChild(element("div", "inline-intent-pending", "分析中"));
+  node.dataset.insightSignature = signature;
+  if (pending) wrap.appendChild(analysisPendingNode("inline-intent-pending", "[意图识别]"));
   else if (result?.status === "ok") {
     const row = messageLabelsApi().render(window.MessageInsightAdapters.apiView(result, message.text || ""), id);
     if (revealing) row.classList.add("inline-intent-revealed");
@@ -4402,14 +4429,15 @@ async function fetchApiInsightResults(work) {
   const entry = labelState.apiInsightCache.get(work.key);
   let terminal = false;
   try {
-    const query = new URLSearchParams({ user: work.user });
+    const query = new URLSearchParams({ user: work.user, style: work.style });
     if (chatState.historyState) {
      const ids = apiInsightCandidates().map(message => String(message.id));
       if (ids.length) query.set("ids", JSON.stringify(ids));
     }
     const data = await api(`/api/model-insights?${query}`, {}, work.controller.signal);
     if (!apiInsightWorkCurrent(work)) return;
-    if (data?.account !== work.account || data.sourceId !== work.sourceId) {
+    if (data?.account !== work.account || data.sourceId !== work.sourceId ||
+        (data.style && data.style !== work.style)) {
       beginUnknownModelSource();
       void loadModelSource(true);
       if (data?.account !== work.account) void loadSessions();
@@ -4487,12 +4515,13 @@ async function submitApiInsightJob(work, candidates, signature) {
     // targets resolvable when new messages arrive or the user scrolls upward.
     const around = candidates[Math.floor(candidates.length / 2)]?.historyCursor;
     const data = await api("/api/model-insights", { method: "POST", body: JSON.stringify({
-       account: work.account, user: work.user, limit: Math.max(1, candidates.length),
+       account: work.account, user: work.user, style: work.style, limit: Math.max(1, candidates.length),
       targetIds: candidates.map(message => String(message.id)),
       ...(around ? { around } : {}),
     }) }, work.controller.signal);
     if (!apiInsightWorkCurrent(work)) return;
-    if (data?.account !== work.account || data.sourceId !== work.sourceId) {
+    if (data?.account !== work.account || data.sourceId !== work.sourceId ||
+        (data.style && data.style !== work.style)) {
       beginUnknownModelSource();
       void loadModelSource(true);
       if (data?.account !== work.account) void loadSessions();
@@ -4544,7 +4573,7 @@ function ensureApiInsights(force = false) {
   if (!labelState.apiInsightWork || labelState.apiInsightWork.key !== key || labelState.apiInsightWork.generation !== chatState.generation) {
     cancelApiInsightWork();
     labelState.apiInsightWork = { key, account: chatState.currentAccount, user: chatState.currentUser,
-      sourceId: settingsState.modelSourceSnapshot.sourceId, generation: chatState.generation, controller: new AbortController(),
+      sourceId: settingsState.modelSourceSnapshot.sourceId, style: intentCardStyle(), generation: chatState.generation, controller: new AbortController(),
       timer: null, pollAttempt: 0, pendingIds: new Set(), getPending: false, postPending: false,
       hydrated: false, force };
     void fetchApiInsightResults(labelState.apiInsightWork);
@@ -4558,6 +4587,7 @@ function ensureApiInsights(force = false) {
   }
   if (!work.hydrated || work.getPending || work.postPending ||
       ["queued", "running"].includes(entry.job?.status)) return;
+  if (labelState.styleChoicePending || !intentCardStartId()) return;
   const candidates = apiInsightCandidates();
   if (!candidates.length) return;
    const pending = entry.sessionReady ? candidates.filter(message => !validApiInsight(
@@ -4572,20 +4602,11 @@ labelState.intentCardCache = new Map();
 labelState.intentCardWork = null;
 labelState.intentCardStarts = new Map();
 labelState.intentCardPicking = null;
-try {
-  const storedStarts = JSON.parse(localStorage.getItem("intent-card-starts-1") || "{}");
-  if (storedStarts && typeof storedStarts === "object") {
-    for (const [key, value] of Object.entries(storedStarts)) {
-      if (typeof value === "string" && value) labelState.intentCardStarts.set(key, { id: value, time: 0 });
-    else if (typeof value?.id === "string" && value.id) labelState.intentCardStarts.set(key, { id: value.id, time: Number(value.time) || 0 });
-    }
-  }
-} catch { /* keep the empty map when the saved file is unreadable */ }
-function saveIntentCardStarts() {
-  const stored = {};
-  for (const [key, value] of labelState.intentCardStarts) stored[key] = value;
-  localStorage.setItem("intent-card-starts-1", JSON.stringify(stored));
-}
+labelState.styleChoicePending = false;
+// A start belongs to this launch only. Saved results stay in the database.
+try { localStorage.removeItem("intent-card-starts-1"); }
+catch { /* a private or test context may not expose localStorage */ }
+function saveIntentCardStarts() {}
 labelState.intentCardStyles = new Map();
 try {
   const storedStyles = JSON.parse(localStorage.getItem("intent-card-styles-1") || "{}");
@@ -4620,6 +4641,22 @@ function intentCardStartRecord() {
 function intentCardStartId() {
   return intentCardStartRecord()?.id || "";
 }
+function atOrAfterAnalysisStart(message) {
+  const saved = intentCardStartRecord();
+  if (!saved?.id || !message) return false;
+  if (String(message.id) === saved.id) return true;
+  const time = Number(message.time) || 0;
+  const startTime = Number(saved.time) || 0;
+  if (time && startTime) return time >= startTime;
+  const messageIndex = chatState.messages.findIndex(item => String(item.id) === String(message.id));
+  const startIndex = chatState.messages.findIndex(item => String(item.id) === saved.id);
+  return messageIndex >= 0 && startIndex >= 0 && messageIndex >= startIndex;
+}
+function renderAnalysisStartNotice() {
+  const node = byId("analysisStartNotice");
+  if (!node) return;
+  node.hidden = !chatState.currentUser || !!intentCardStartId();
+}
 function intentCardIsEarlier(message, saved) {
   if (!saved?.id || String(message.id) === saved.id) return false;
   const next = Number(message.time) || 0;
@@ -4653,15 +4690,17 @@ function intentCardPickActive() {
 function intentCardVisibleIds() {
   return chatState.messages.filter(intentCardEligible).slice(-500).map(message => String(message.id));
 }
-function intentCardOwns(message) {
-  if (settingsState.settings.intentCards !== true || !settingsState.modelSourceResolved ||
-      settingsState.modelSourceSnapshot.mode !== "api" || !intentCardEligible(message)) return false;
-  const id = String(message.id);
-  const entry = activeIntentCardEntry();
-  if (entry && window.IntentCards.valid(entry.results?.[id], id, message.text)) return true;
-  const running = labelState.intentCardWork?.postPending || ["queued", "running"].includes(entry?.job?.status);
-  const span = new Set((entry?.targetIds || []).map(String));
-  return running && (span.has(id) || !!labelState.intentCardWork?.pendingIds?.has(id));
+function intentCardRunState() {
+  const cacheKey = settingsState.modelSourceSnapshot ? intentCardCacheKey() : "";
+  const entry = cacheKey && labelState.intentCardCache?.get ? labelState.intentCardCache.get(cacheKey) || null : null;
+  const work = labelState.intentCardWork;
+  const workHere = !!work && work.account === chatState.currentAccount && work.user === chatState.currentUser &&
+    (!settingsState.modelSourceSnapshot || work.sourceId === settingsState.modelSourceSnapshot.sourceId);
+  const total = Number(entry?.job?.total) || 0;
+  const processed = Number(entry?.job?.processed) || 0;
+  const running = workHere && (work.postPending || ["queued", "running"].includes(entry?.job?.status));
+  const count = total > 0 ? `${Math.min(processed, total)}/${total}` : "";
+  return { entry, workHere, running, total, processed, count };
 }
 function renderIntentCardPick() {
   const bar = byId("intentCardPickBar");
@@ -4688,14 +4727,7 @@ function renderIntentCardStartButton() {
   const button = byId("btnIntentCardStart");
   if (!button?.classList || typeof button.classList.toggle !== "function") return;
   const picking = intentCardPickActive();
-  const cacheKey = settingsState.modelSourceSnapshot ? intentCardCacheKey() : "";
-  const entry = cacheKey ? labelState.intentCardCache?.get?.(cacheKey) || null : null;
-  const total = Number(entry?.job?.total) || 0;
-  const processed = Number(entry?.job?.processed) || 0;
-  const work = labelState.intentCardWork;
-  const workHere = !!work && work.account === chatState.currentAccount && work.user === chatState.currentUser;
-  const running = settingsState.settings.intentCards === true && workHere &&
-    (["queued", "running"].includes(entry?.job?.status) || work.postPending);
+  const { entry, running, count } = intentCardRunState();
   button.classList.toggle("active", picking);
   button.setAttribute?.("aria-pressed", String(picking));
   if (picking) {
@@ -4704,8 +4736,8 @@ function renderIntentCardStartButton() {
     return;
   }
   if (running) {
-    button.textContent = total ? `指南 ${Math.min(processed, total)}/${total}` : "指南分析中";
-    button.title = "正在从所选消息分析到最新";
+    button.textContent = "分析起点";
+    button.title = count ? `正在分析 ${count}。完成后仍可把起点往更早移动` : "正在从所选消息分析到最新";
     return;
   }
   if (entry?.error) {
@@ -4727,13 +4759,23 @@ function renderIntentCardButton() {
   renderIntentCardStyle();
   renderIntentCardPick();
   renderIntentCardStartButton();
+  renderAnalysisStartNotice();
   const button = byId("btnToggleIntentCards");
+  const { entry, running, count, total } = intentCardRunState();
+  if (running) setAnalysisNote("cards", count ? `指南 ${count}` : "指南分析中");
+  else if (entry?.error) setAnalysisNote("cards", "指南失败");
+  else if (entry?.job?.status === "done") setAnalysisNote("cards", total ? `指南完成 ${total} 条` : "指南完成");
+  else setAnalysisNote("cards", "");
   if (!button?.classList || typeof button.classList.toggle !== "function") return;
   const on = settingsState.settings.intentCards === true;
   button.classList.toggle("active", on);
   button.setAttribute?.("aria-pressed", String(on));
-  button.textContent = "回复指南";
-  button.title = on ? "隐藏已保存的回复指南" : "显示已保存的回复指南";
+  if (running) button.setAttribute?.("aria-busy", "true");
+  else button.removeAttribute?.("aria-busy");
+  button.textContent = running ? (count ? `回复指南 · ${count}` : "回复指南 · 分析中") :
+    entry?.error ? "回复指南 · 失败" : "回复指南";
+  button.title = on ? "隐藏回复指南。正在进行的分析会继续，进度仍显示在这里" :
+    "显示已保存的回复指南。选了分析起点后，会补上还没有指南的消息";
 }
 function intentCardWorkCurrent(work) {
   return labelState.intentCardWork === work &&
@@ -4751,20 +4793,21 @@ function cancelIntentCardWork() {
 }
 function updateIntentCard(message, node, wrap) {
   const id = String(message.id);
-  const entry = activeIntentCardEntry();
+  const showing = settingsState.settings.intentCards === true;
+  const entry = showing ? activeIntentCardEntry() : null;
   const card = entry && window.IntentCards.valid(entry.results?.[id], id, message.text) ? entry.results[id] : null;
-  const running = labelState.intentCardWork?.postPending || ["queued", "running"].includes(entry?.job?.status);
+  const running = showing && (labelState.intentCardWork?.postPending || ["queued", "running"].includes(entry?.job?.status));
   const span = new Set((entry?.targetIds || []).map(String));
-  const pending = !card && running && (span.has(id) || labelState.intentCardWork?.pendingIds?.has(id));
-  const failed = !card && !pending && !!entry?.error;
+  const pending = showing && !card && running && (span.has(id) || labelState.intentCardWork?.pendingIds?.has(id));
+  const failed = showing && !card && !pending && !!entry?.error;
   const signature = card ? `card:${JSON.stringify(card)}` : pending ? `card:pending:${id}` : failed ? `card:error:${entry.error}` : "";
-  if (node.dataset.analysisSignature === signature) return;
+  if (node.dataset.cardSignature === signature) return;
   wrap.querySelector(".intent-card")?.remove();
   wrap.querySelector(".intent-card-pending")?.remove();
-  node.dataset.analysisSignature = signature;
+  node.dataset.cardSignature = signature;
   if (card) wrap.appendChild(intentCardsApi().render(card));
-  else if (pending) wrap.appendChild(element("div", "intent-card-pending", "分析中"));
-  else if (failed) wrap.appendChild(element("div", "intent-card-pending", "分析失败"));
+  else if (pending) wrap.appendChild(analysisPendingNode("intent-card-pending", "[回复指南]"));
+  else if (failed) wrap.appendChild(element("div", "intent-card-pending", "[回复指南] 分析失败"));
 }
 function scheduleIntentCardPoll(work) {
   clearTimeout(work.timer);
@@ -4891,24 +4934,30 @@ function intentCardCacheEntry(key) {
   }
   return labelState.intentCardCache.get(key);
 }
+function intentCardWindowStart() {
+  const saved = intentCardStartRecord();
+  if (saved?.id) return { record: saved, replace: false, previous: null };
+  const eligible = chatState.messages.filter(intentCardEligible).slice(-500);
+  if (!eligible.length) return null;
+  const first = eligible[0];
+  return { record: { id: String(first.id), time: Number(first.time) || 0 }, replace: true, previous: null };
+}
 function beginIntentCardAnalysis(startId, previousStart) {
   const apiMode = settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api";
-  if (!apiMode || !chatState.currentUser || !chatState.controller || !startId) return;
-  let changed = false;
-  if (settingsState.settings.intent) {
-    settingsState.settings.intent = false;
-    labelState.manualRecentDeferred = false;
-    if (byId("btnToggleIntent")) setIntentActionState("idle");
-    cancelApiInsightWork();
-    changed = true;
-  }
+  if (!apiMode || !chatState.currentUser || !chatState.controller || !startId) return false;
   if (settingsState.settings.intentCards !== true) {
     settingsState.settings.intentCards = true;
-    changed = true;
+    save();
   }
-  if (changed) save();
   const key = intentCardCacheKey();
   const entry = intentCardCacheEntry(key);
+  const current = labelState.intentCardWork;
+  if (current && current.key === key && current.startId === startId &&
+      current.generation === chatState.generation &&
+      (current.postPending || ["queued", "running"].includes(entry.job?.status))) {
+    renderIntentCardButton();
+    return true;
+  }
   entry.error = "";
   cancelIntentCardWork();
   labelState.intentCardWork = { key, account: chatState.currentAccount, user: chatState.currentUser,
@@ -4916,6 +4965,7 @@ function beginIntentCardAnalysis(startId, previousStart) {
     startId, previousStart, generation: chatState.generation, controller: new AbortController(), timer: null,
     pollAttempt: 0, pendingIds: new Set(), getPending: false, postPending: false, hydrated: false };
   void submitIntentCards(labelState.intentCardWork);
+  return true;
 }
 async function loadSavedIntentCards() {
   const apiMode = settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api";
@@ -4967,6 +5017,33 @@ async function loadSavedIntentCards() {
 }
 function ensureIntentCards() {
   void loadSavedIntentCards();
+}
+function insightRangeMessages() {
+  return apiInsightCandidates();
+}
+function cardRangeMessages() {
+  return chatState.messages.filter(intentCardEligible).filter(atOrAfterAnalysisStart).slice(-500);
+}
+function insightGaps() {
+  const entry = activeApiInsightEntry();
+  return insightRangeMessages().filter(message => !validApiInsight(entry?.results?.[String(message.id)], String(message.id)));
+}
+function cardGaps() {
+  const entry = activeIntentCardEntry();
+  return cardRangeMessages().filter(message => !window.IntentCards.valid(entry?.results?.[String(message.id)], String(message.id), message.text));
+}
+function ensureIntentCardAnalysis() {
+  if (labelState.styleChoicePending || settingsState.settings.intentCards !== true || !intentCardStartId()) return;
+  const key = intentCardCacheKey();
+  const entry = intentCardCacheEntry(key);
+  const missing = cardGaps();
+  if (!missing.length) return;
+  const signature = missing.map(message => String(message.id)).join("\0");
+  const work = labelState.intentCardWork;
+  if (work && work.key === key && work.startId === intentCardStartId() && work.gapSignature === signature &&
+      (work.postPending || !work.hydrated || ["queued", "running", "done", "error"].includes(entry?.job?.status))) return;
+  beginIntentCardAnalysis(intentCardStartId(), null);
+  if (labelState.intentCardWork) labelState.intentCardWork.gapSignature = signature;
 }
 let managedAccounts = [];
 let managedCurrentAccountId = null;
@@ -5249,6 +5326,13 @@ function closeSettingsModal() {
   pendingDeleteAccountId = null;
   byId("accountDeleteConfirm").hidden = true;
   renderManagedAccounts();
+  setContextSizeHelp(false);
+}
+function setContextSizeHelp(open) {
+  const dialog = byId("contextSizeHelp");
+  if (!dialog) return;
+  dialog.hidden = !open;
+  if (open) byId("btnCloseContextSizeHelp")?.focus();
 }
 async function deleteManagedAccount() {
   const account = managedAccounts.find(item => item.accountId === pendingDeleteAccountId);
@@ -5446,7 +5530,8 @@ function invalidateAnalysisScopeCaches(scope) {
   saveStoredProfiles();
   if (scope.kind !== "conversation") return;
   if (scope.mode === "api") {
-    labelState.apiInsightCache.delete(apiInsightKey(scope.account, scope.user, scope.sourceId));
+    for (const style of ["dating", "general"])
+      labelState.apiInsightCache.delete(apiInsightKey(scope.account, scope.user, scope.sourceId, style));
     for (const style of ["dating", "general"])
       labelState.intentCardCache?.delete(JSON.stringify([scope.account, scope.user, scope.sourceId, style]));
   }
@@ -5566,7 +5651,7 @@ function retryAnalysis() {
     return;
   }
   if (!canAnalyzeLocal()) {
-    text("analysisStatus", settingsState.localModelResolved ? "未安装 Laya 模型，请在设置下载模型" : "正在检查 Laya 模型");
+    setAnalysisNote("notice", settingsState.localModelResolved ? "未安装 Laya 模型，请在设置下载模型" : "正在检查 Laya 模型");
     return;
   }
   const key = portraitState.activeAnalysisScope || JSON.stringify([chatState.currentAccount, chatState.currentUser, "current"]);
@@ -5575,7 +5660,7 @@ function retryAnalysis() {
   byId("btnRetryAnalysis").hidden = true;
   byId("btnRetryProfile").hidden = true;
   setStripStatus("");
-  text("analysisStatus", "");
+  setAnalysisNote("notice", "");
   labelState.recentFailed = false;
   portraitState.incrementalFailed = false;
   portraitState.activeAnalysisScope = key;
@@ -5593,13 +5678,11 @@ byId("btnRetryProfile").addEventListener("click", () => {
 byId("btnToggleIntent").addEventListener("click", () => {
   const turningOn = !settingsState.settings.intent;
   settingsState.settings.intent = turningOn;
-  if (turningOn) {
-    settingsState.settings.intentCards = false;
-    labelState.intentCardPicking = null;
-  } else {
+  if (!turningOn) {
     labelState.manualRecentDeferred = false;
     setIntentActionState("idle");
     cancelApiInsightWork();
+    setAnalysisNote("intent", "");
   }
   save();
   applySettings();
@@ -5616,16 +5699,12 @@ byId("btnToggleIntentCards").addEventListener("click", () => {
   }
   const turningOn = !settingsState.settings.intentCards;
   settingsState.settings.intentCards = turningOn;
-  if (turningOn && settingsState.settings.intent) {
-    settingsState.settings.intent = false;
-    labelState.manualRecentDeferred = false;
-    setIntentActionState("idle");
-    cancelApiInsightWork();
-  }
   save();
   applySettings();
   refreshLabels();
-  if (turningOn) ensureIntentCards();
+  if (!turningOn) return;
+  ensureIntentCards();
+  ensureIntentCardAnalysis();
 });
 byId("btnIntentCardStart")?.addEventListener("click", () => {
   if (intentCardPickActive()) {
@@ -5800,7 +5879,12 @@ byId("chatMessages")?.addEventListener("click", event => {
   labelState.intentCardStarts.set(intentCardStartKey(), { id: String(message.id), time: Number(message.time) || 0 });
   saveIntentCardStarts();
   labelState.intentCardPicking = null;
-  beginIntentCardAnalysis(String(message.id), previousStart);
+  renderAnalysisStartNotice();
+  if (settingsState.settings.intentCards === true) beginIntentCardAnalysis(String(message.id), previousStart);
+  if (settingsState.settings.intent) {
+    if (settingsState.modelSourceSnapshot?.mode === "api") ensureApiInsights(true);
+    else submitManualRecent();
+  }
   applySettings();
   refreshLabels();
 });
@@ -5815,18 +5899,82 @@ document.addEventListener("keydown", event => {
   labelState.intentCardPicking = null;
   renderIntentCardButton();
 });
-byId("selectIntentCardStyle").addEventListener("change", event => {
-  const value = event.target.value;
-  if ((value !== "dating" && value !== "general") || !chatState.currentAccount || !chatState.currentUser) {
-    event.target.value = intentCardStyle();
-    return;
-  }
-  labelState.intentCardStyles.set(`${chatState.currentAccount}\0${chatState.currentUser}`, value);
+function commitAnalysisStyle(style) {
+  labelState.intentCardStyles.set(`${chatState.currentAccount}\0${chatState.currentUser}`, style);
   saveIntentCardStyles();
+  const select = byId("selectIntentCardStyle");
+  if (select) select.value = style;
+  cancelApiInsightWork();
   cancelIntentCardWork();
   applySettings();
   refreshLabels();
+  ensureApiInsights();
   ensureIntentCards();
+}
+function waitForAnalysisHydration() {
+  const started = Date.now();
+  return new Promise(resolve => {
+    const tick = () => {
+      const insightReady = settingsState.settings.intent !== true || settingsState.modelSourceSnapshot?.mode !== "api" ||
+        labelState.apiInsightWork?.hydrated;
+      const cardsReady = settingsState.settings.intentCards !== true ||
+        !labelState.intentCardCache.get(intentCardCacheKey())?.viewLoading;
+      if ((insightReady && cardsReady) || Date.now() - started > 8000) resolve();
+      else setTimeout(tick, 40);
+    };
+    tick();
+  });
+}
+function askStyleConfirm() {
+  const dialog = byId("analysisStyleConfirm");
+  if (!dialog) return Promise.resolve(false);
+  dialog.hidden = false;
+  return new Promise(resolve => {
+    const ok = byId("btnConfirmAnalysisStyle");
+    const cancel = byId("btnCancelAnalysisStyle");
+    const finish = value => {
+      dialog.hidden = true;
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      resolve(value);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+  });
+}
+byId("selectIntentCardStyle").addEventListener("change", event => {
+  const value = event.target.value;
+  const previous = intentCardStyle();
+  if ((value !== "dating" && value !== "general") || !chatState.currentAccount || !chatState.currentUser) {
+    event.target.value = previous;
+    return;
+  }
+  if (value === previous) return;
+  const armed = !!intentCardStartId() && (settingsState.settings.intent === true || settingsState.settings.intentCards === true);
+  if (!armed) {
+    commitAnalysisStyle(value);
+    return;
+  }
+  labelState.styleChoicePending = true;
+  commitAnalysisStyle(value);
+  void waitForAnalysisHydration().then(async () => {
+    const missing = (settingsState.settings.intent === true && settingsState.modelSourceSnapshot?.mode === "api" && insightGaps().length) ||
+      (settingsState.settings.intentCards === true && cardGaps().length);
+    if (!missing || intentCardStyle() !== value) {
+      labelState.styleChoicePending = false;
+      return;
+    }
+    const confirmed = await askStyleConfirm();
+    labelState.styleChoicePending = false;
+    if (!confirmed) {
+      commitAnalysisStyle(previous);
+      return;
+    }
+    if (settingsState.settings.intent === true && settingsState.modelSourceSnapshot?.mode === "api") ensureApiInsights(true);
+    ensureIntentCardAnalysis();
+  });
 });
 for (const [id, key] of [["selectThemeMode", "theme"], ["selectZoomLevel", "zoom"]]) byId(id).addEventListener("change", event => { settingsState.settings[key] = event.target.value; save(); applySettings(); });
 byId("selectRuntimeProvider").addEventListener("change", event => { void changeRuntime(event.target.value); });
@@ -6138,6 +6286,17 @@ byId("btnWorkerMinus").addEventListener("click", () => { void changeWorkerSettin
 byId("btnWorkerPlus").addEventListener("click", () => { void changeWorkerSettings(1); });
 byId("btnToggleElasticWorkers").addEventListener("click", () => {
   void changeWorkerSettings(0, !settingsState.workerSettings?.elastic);
+});
+byId("btnContextSizeHelp")?.addEventListener("click", () => setContextSizeHelp(true));
+byId("btnCloseContextSizeHelp")?.addEventListener("click", () => setContextSizeHelp(false));
+byId("contextSizeHelp")?.addEventListener("click", event => {
+  if (event.target === byId("contextSizeHelp")) setContextSizeHelp(false);
+});
+byId("contextSizeHelp")?.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  setContextSizeHelp(false);
 });
 byId("btnCloseSettings").addEventListener("click", closeSettingsModal);
 byId("settingsModal").addEventListener("click", event => { if (event.target === byId("settingsModal")) closeSettingsModal(); });

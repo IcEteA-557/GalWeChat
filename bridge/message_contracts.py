@@ -13,6 +13,8 @@ from __future__ import annotations
 FINE_LABEL_SCHEMA = "generic-v9"
 
 API_INSIGHT_REVISION = "reading-v1"
+API_INSIGHT_STYLE_REVISION = "reading-v2"
+API_INSIGHT_STYLES = frozenset({"dating", "general"})
 
 API_INSIGHT_STATUSES = frozenset({"ok", "routine", "uncertain", "insufficient"})
 API_AFFECT_FIELDS = ("tone", "feeling", "interaction")
@@ -21,8 +23,29 @@ API_LABEL_MIN = 1
 API_LABEL_MAX = 4
 
 
-def api_insight_scope(source_id):
-    return source_id + ":" + API_INSIGHT_REVISION
+def api_insight_scope(source_id, style=None):
+    """Legacy rows stay at reading-v1. Styled rows use reading-v2 and never overwrite them."""
+    if style is None:
+        return source_id + ":" + API_INSIGHT_REVISION
+    if style not in API_INSIGHT_STYLES:
+        raise ValueError("invalid insight style")
+    return source_id + ":" + API_INSIGHT_STYLE_REVISION + ":" + style
+
+
+def api_insight_read_scopes(source_id, style=None):
+    """General display also reads the pre-style reading-v1 rows. Dating does not."""
+    if style is None:
+        return [api_insight_scope(source_id)]
+    scopes = [api_insight_scope(source_id, style)]
+    if style == "general":
+        scopes.append(api_insight_scope(source_id))
+    return scopes
+
+
+def api_insight_write_scope(source_id, style=None):
+    if style is None:
+        return api_insight_scope(source_id)
+    return api_insight_scope(source_id, style)
 
 
 def _is_han(character):

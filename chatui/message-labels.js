@@ -9,6 +9,7 @@
     function render(view, messageId) {
       const row = element("div", "inline-intent-row");
       if (!view.emotions.length && !view.intents.length) return row;
+      row.appendChild(element("div", "analysis-block-title", "[意图识别]"));
       const line = element("div", `intent-line${view.emotions.length ? " emotion-line" : ""}${view.intents.length ? " intent-score-line" : ""}`);
       if (view.emotions.length) {
         line.appendChild(element("span", "intent-label", "情绪"));
@@ -41,6 +42,7 @@
         : { emotions: [], intents: scores.slice(0, 3).map(({ item }) => ({ label: String(item.label).trim() })) };
       const row = render(view, messageId);
       for (const line of [...row.children]) {
+        if (!String(line.className || "").includes("intent-line")) continue;
         line.children[0].textContent = label;
         container.appendChild(line);
       }
@@ -51,7 +53,9 @@
         label: String(candidate.label).trim(),
       })) };
       const row = render(view, "");
-      for (const line of [...row.children]) container.appendChild(line);
+      for (const line of [...row.children]) {
+        if (String(line.className || "").includes("intent-line")) container.appendChild(line);
+      }
     }
     return { render, renderApiInsightResult: render, appendScoreLine, appendIntentLine };
   }

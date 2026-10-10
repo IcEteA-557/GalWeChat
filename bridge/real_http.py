@@ -155,7 +155,10 @@ def make_handler(backend, accounts=None, control_token=None):
                         ids = json.loads(raw_ids)
                         if not isinstance(ids, list):
                             raise ValueError("invalid API insight ids")
-                    return self.send(200, backend.model_insights(user_value(query.get("user")), ids))
+                    style = query.get("style")
+                    if style is not None and style not in ("dating", "general"):
+                        raise ValueError("invalid insight style")
+                    return self.send(200, backend.model_insights(user_value(query.get("user")), ids, style))
                 if parsed.path == "/api/model-portrait":
                     member = query.get("member")
                     return self.send(200, backend.model_portrait(user_value(query.get("user")),
@@ -347,8 +350,11 @@ def make_handler(backend, accounts=None, control_token=None):
                     # batches.
                     limit = integer(request.get("limit"), 500, 500)
                     around = request.get("around")
+                    style = request.get("style")
+                    if style is not None and style not in ("dating", "general"):
+                        raise ValueError("invalid insight style")
                     return self.send(202, backend.start_model_insights(
-                        account, user, limit, request.get("targetIds"), around))
+                        account, user, limit, request.get("targetIds"), around, style))
                 if endpoint == "/api/model-portrait":
                     if set(request) not in ({"account", "user"},
                                             {"account", "user", "member"},
